@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard de Projetos de Arquitetura</title>
+  <!-- Tailwind CSS + Apple System Font -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen; }
+  </style>
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- html2pdf.js CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.9.2/html2pdf.bundle.min.js"></script>
+</head>
+<body class="bg-black text-white p-4">
+  <!-- Header: Title editável e logos -->
+  <div class="flex justify-between items-center mb-4">
+    <div contenteditable class="text-2xl font-bold text-white px-4 py-2 bg-gray-800 rounded-lg shadow-inner">Dashboard de Projetos</div>
+    <div class="flex space-x-2">
+      <div class="w-10 h-10 bg-gray-800 rounded-lg flex items-center justify-center text-gray-500">Logo</div>
+      <div class="w-10 h-10 bg-gray-800 rounded-lg flex items-center justify-center text-gray-500">Logo</div>
+    </div>
+  </div>
+  <!-- Export All Button -->
+  <div class="mb-4 text-right">
+    <button id="export-all" class="px-6 py-2 bg-purple-600 rounded-xl shadow-lg hover:bg-purple-700 transition">Exportar Todos em PDF</button>
+  </div>
+  <!-- Dashboard: até 5 cards lado a lado, tamanho reduzido estilo Trello -->
+  <div id="dashboard" class="grid grid-cols-5 gap-4">
+  </div>
+
+  <script>
+    const PHASES = [
+      { key: 'estudo', label: 'Estudo', color: '#EC4899' },
+      { key: 'anteprojeto', label: 'Anteprojeto', color: '#3B82F6' },
+      { key: 'executivo', label: 'Executivo', color: '#FBBF24' },
+      { key: '3d', label: '3D', color: '#14B8A6' },
+      { key: 'prefeitura', label: 'Prefeitura', color: '#A855F7' }
+    ];
+    const MS_PER_DAY = 24*60*60*1000;
+
+    const projects = Array.from({ length: 15 }, (_, i) => ({
+      id:i+1, name:`Empreendimento ${i+1}`, progress:{}, responsible:{}, completed:{}, start:{}, end:{}, notes:{},
+      lastTotal:0, lastUpdate:new Date().toLocaleString('pt-BR'), priority:false
+    }));
+
+    function createProjectCard(proj) {
+      const card = document.createElement('div');
+      card.className = 'bg-gray-900 border border-gray-700 rounded-xl shadow-md p-3 flex flex-col';
+      card.id = `project-${proj.id}`;
+      card.innerHTML = `
+        <div id="cover-container-${proj.id}" class="relative h-12 mb-2 rounded-t-xl bg-gray-800 cursor-pointer flex items-center justify-center">
+          <input type="file" accept="image/*" class="absolute inset-0 opacity-0" />
+          <span class="text-gray-500 text-sm">Clique para adicionar capa</span>
+        </div>
+        <div class="flex justify-between items-center mb-1">
+          <h2 contenteditable class="text-base font-semibold truncate bg-gray-800 px-2 rounded text-white">${proj.name}</h2>
+          <button data-action="toggle-priority" class="text-gray-400 text-xl focus:outline-none">★</button>
+        </div>
+        <p class="text-gray-400 text-xs mb-2">Últ. atualização: <span data-field="lastUpdate">${proj.lastUpdate}</span></p>
+        <div class="flex justify-around items-center mb-3">
+          <div class="flex flex-col items-center">
+            <p class="text-xs">Fases</p>
+            <canvas width="140" height="140" data-chart="phases"></canvas>
+          </div>
+          <div class="flex flex-col items-center">
+            <p class="text-xs">Geral</p>
+            <canvas width="100" height="100" data-chart="total"></canvas>
+          </div>
+          <div class="flex flex-col items-center">
+            <p class="text-xs">Semana</p>
+            <canvas width="100" height="100" data-chart="deltaChart"></canvas>
+          </div>
+        </div>
+        <div class="text-center text-xs mb-2">
+          <span>Prog: <b data-field="totalPercent">0</b>%</span> | <span class="text-green-400" data-field="delta">+0%</span>
+        </div>
+        <div class="space-y-2 flex-grow overflow-y-auto mb-2">
+          ${PHASES.map(p=>`
+            <div class="bg-gray-800 p-2 rounded-lg border border-gray-700">
+              <div class="flex justify-between items-center mb-1">
+                <span class="text-sm font-medium">${p.label}</span>
+                <input type="checkbox" data-input="completed-${p.key}" class="form-checkbox text-xl text-blue-400" />
+              </div>
+              <div class="grid grid-cols-2 gap-1 mb-1 text-xs">
+                <input type="text" placeholder="Responsável" data-input="responsible-${p.key}" class="p-1 rounded bg-gray-700" />
+                <input type="number" min="0" max="100" value="0" data-input="progress-${p.key}" class="p-1 rounded bg-gray-700" />
+                <input type="date" data-input="start-${p.key}" class="p-1 rounded bg-gray-700" />
+                <input type="date" data-input="end-${p.key}" class="p-1 rounded bg-gray-700" />
+              </div>
+              <textarea placeholder="Observações" data-input="notes-${p.key}" class="w-full p-1 rounded bg-gray-700 text-xs" rows="2"></textarea>
+            </div>
+          `).join('')}
+        </div>
+        <div class="mb-2">
+          <p class="text-sm font-semibold mb-1">Cronograma</p>
+          <canvas width="280" height="80" data-chart="timeline-${proj.id}"></canvas>
+        </div>
+      `;
+      initCharts(card,proj);
+      setupEvents(card,proj);
+      return card;
+    }
+
+    function initCharts(card,proj) {
+      const ctxPh = card.querySelector('[data-chart="phases"]').getContext('2d');
+      const ctxTot = card.querySelector('[data-chart="total"]').getContext('2d');
+      const ctxDel = card.querySelector('[data-chart="deltaChart"]').getContext('2d');
+      const ctxTm = card.querySelector(`[data-chart="timeline-${proj.id}"]`).getContext('2d');
+
+      proj.phaseChart = new Chart(ctxPh, { type:'pie', data:{ labels:PHASES.map(p=>p.label), datasets:[{ data:PHASES.map(p=>proj.progress[p.key]||0), backgroundColor:PHASES.map(p=>p.color) }] }, options:{responsive:false, plugins:{legend:{display:false}}} });
+      proj.totalChart = new Chart(ctxTot, { type:'doughnut', data:{ labels:['C','R'], datasets:[{ data:[0,100], backgroundColor:['#fff','#444'] }] }, options:{responsive:false, cutout:'70%', plugins:{legend:{display:false}}} });
+      proj.deltaChart = new Chart(ctxDel, { type:'doughnut', data:{ labels:['V','R'], datasets:[{ data:[0,100], backgroundColor:['#34D399','#555'] }] }, options:{responsive:false, cutout:'70%', plugins:{legend:{display:false}}} });
+      // Gantt-like: horizontal stacked bar
+      proj.timeline = new Chart(ctxTm, { type:'bar', data:{ labels:PHASES.map(p=>p.label), datasets:[ { label:'Offset', data:PHASES.map(p=>0), backgroundColor:'transparent' }, { label:'Duração', data:PHASES.map(p=>0), backgroundColor:PHASES.map(p=>p.color) } ] }, options:{responsive:false, indexAxis:'y', scales:{ x:{ stacked:true, beginAtZero:true }, y:{ stacked:true } }, plugins:{legend:{display:false}}} });
+    }
+
+    function setupEvents(card,proj) {
+      // Cover upload
+      const coverCont = card.querySelector(`#cover-container-${proj.id}`);
+      coverCont.querySelector('input[type=file]').addEventListener('change',e=>{
+        const reader=new FileReader(); reader.onload=ev=>{ coverCont.style.backgroundImage=`url(${ev.target.result})`; coverCont.style.backgroundSize='cover'; coverCont.querySelector('span').style.display='none'; };
+        reader.readAsDataURL(e.target.files[0]);
+      });
+      // Inputs
+      card.querySelectorAll('input, textarea').forEach(el=>el.addEventListener('change',()=>{
+        const k=el.getAttribute('data-input'); if(!k)return; const [type,phase]=k.split('-'); let v = el.type==='checkbox'?el.checked:el.value;
+        if(type==='completed' && v) { proj.progress[phase]=100; card.querySelector(`input[data-input="progress-${phase}"]`).value=100; }
+        if(type==='progress') proj.progress[phase]=Number(v);
+        if(type==='responsible') proj.responsible[phase]=v;
+        if(type==='start') proj.start[phase]=v;
+        if(type==='end') proj.end[phase]=v;
+        if(type==='notes') proj.notes[phase]=v;
+        // Update charts
+        const total = PHASES.reduce((a,p)=>a+(proj.progress[p.key]||0),0)/PHASES.length;
+        const delta = (total-(proj.lastTotal||0)).toFixed(1);
+        proj.lastTotal=total; proj.lastUpdate=new Date().toLocaleString('pt-BR');
+        card.querySelector('[data-field="totalPercent"]').textContent=total.toFixed(1);
+        card.querySelector('[data-field="delta"]').textContent=(delta>=0?'+':'')+delta+'%';
+        card.querySelector('[data-field="lastUpdate"]').textContent=proj.lastUpdate;
+        proj.phaseChart.data.datasets[0].data = PHASES.map(p=>proj.progress[p.key]||0); proj.phaseChart.update();
+        proj.totalChart.data.datasets[0].data = [total,100-total]; proj.totalChart.update();
+        proj.deltaChart.data.datasets[0].data = [Math.abs(delta),100-Math.abs(delta)]; proj.deltaChart.update();
+        // Update timeline durations
+        const durations = PHASES.map(p=>{
+          const s=proj.start[p.key], e=proj.end[p.key];
+          if(s&&e) return Math.max(0, (new Date(e)-new Date(s))/MS_PER_DAY);
+          return 0;
+        });
+        proj.timeline.data.datasets[1].data = durations; proj.timeline.update();
+      }));
+      // Priority
+      card.querySelector('[data-action="toggle-priority"]').addEventListener('click',()=>{
+        proj.priority=!proj.priority;
+        card.classList.toggle('border-yellow-400',proj.priority);
+        card.classList.toggle('shadow-xl',proj.priority);
+      });
+    }
+
+    // Render cards
+    document.getElementById('dashboard').append(...projects.map(createProjectCard));
+    // Export
+    document.getElementById('export-all').addEventListener('click',()=>{
+      html2pdf().from(document.getElementById('dashboard')).set({margin:0.5, filename:'dashboard.pdf', html2canvas:{scale:2}}).save();
+    });
+  </script>
+</body>
+</html>
